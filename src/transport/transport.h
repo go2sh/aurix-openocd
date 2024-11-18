@@ -87,6 +87,9 @@ bool transport_is_dapdirect_jtag(void);
 bool transport_is_dapdirect_swd(void);
 bool transport_is_swim(void);
 
+#if BUILD_TAS_CLIENT
+bool transport_is_tas(void);
+#endif
 #if BUILD_HLADAPTER
 bool transport_is_hla(void);
 #else

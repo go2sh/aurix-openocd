@@ -101,6 +101,7 @@ static struct target_type *target_types[] = {
 	&aarch64_target,
 	&armv8r_target,
 	&mips_mips64_target,
+	&aurix_target,
 	NULL,
 };
 
@@ -5830,6 +5831,11 @@ static int target_create(struct jim_getopt_info *goi)
 		if (target->has_dap) {
 			if (!target->dap_configured) {
 				Jim_SetResultString(goi->interp, "-dap ?name? required when creating target", -1);
+				e = JIM_ERR;
+			}
+		} else if (target->has_ocds) {
+			if (!target->ocds_configured) {
+				Jim_SetResultString(goi->interp, "-ocds ?name? required when creating target", -1);
 				e = JIM_ERR;
 			}
 		} else {

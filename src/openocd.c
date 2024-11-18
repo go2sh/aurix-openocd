@@ -27,6 +27,7 @@
 #include <target/arm_cti.h>
 #include <target/arm_adi_v5.h>
 #include <target/arm_tpiu_swo.h>
+#include <target/aurix/aurix_ocds.h>
 #include <rtt/rtt.h>
 
 #include <server/server.h>
@@ -147,6 +148,10 @@ COMMAND_HANDLER(handle_init_command)
 	if (retval != ERROR_OK)
 		return ERROR_FAIL;
 
+	retval = command_run_line(CMD_CTX, "ocds init");
+	if (retval != ERROR_OK)
+		return ERROR_FAIL;
+
 	LOG_DEBUG("Examining targets...");
 	if (target_examine() != ERROR_OK)
 		LOG_DEBUG("target examination failed");
@@ -256,6 +261,7 @@ static struct command_context *setup_command_handler(Jim_Interp *interp)
 		&cti_register_commands,
 		&dap_register_commands,
 		&arm_tpiu_swo_register_commands,
+		&ocds_register_commands,
 		NULL
 	};
 	for (unsigned int i = 0; command_registrants[i]; i++) {

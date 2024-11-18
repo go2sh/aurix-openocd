@@ -177,6 +177,8 @@ struct target {
 										 * currently. */
 	bool has_dap;						/* set to true if target has ADIv5 support */
 	bool dap_configured;				/* set to true if ADIv5 DAP is configured */
+	bool has_ocds;
+	bool ocds_configured;
 	bool tap_configured;				/* set to true if JTAG tap has been configured
 										 * through -chain-position */
 

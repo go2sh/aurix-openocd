@@ -352,6 +352,9 @@ struct adapter_driver {
 
 	/* SWIM APIs */
 	const struct swim_driver *swim_ops;
+
+	/* AURIX OCDS APIs */
+	const struct aurix_ocds_ops *tas_ops;
 };
 
 extern const char * const jtag_only[];
@@ -403,5 +406,6 @@ extern struct adapter_driver vdebug_adapter_driver;
 extern struct adapter_driver vsllink_adapter_driver;
 extern struct adapter_driver xds110_adapter_driver;
 extern struct adapter_driver xlnx_pcie_xvc_adapter_driver;
+extern struct adapter_driver tas_client_adapter_driver;
 
 #endif /* OPENOCD_JTAG_INTERFACE_H */

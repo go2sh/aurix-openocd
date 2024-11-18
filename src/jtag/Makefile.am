@@ -21,6 +21,7 @@ include %D%/drivers/Makefile.am
 	%D%/interfaces.c \
 	%D%/tcl.c \
 	%D%/swim.c \
+	%D%/tas.c \
 	%D%/commands.h \
 	%D%/interface.h \
 	%D%/interfaces.h \
@@ -28,6 +29,7 @@ include %D%/drivers/Makefile.am
 	%D%/jtag.h \
 	%D%/swd.h \
 	%D%/swim.h \
+	%D%/tas.h \
 	%D%/tcl.h
 
 STARTUP_TCL_SRCS += %D%/startup.tcl
