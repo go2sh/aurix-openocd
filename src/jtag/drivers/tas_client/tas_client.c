@@ -217,7 +217,7 @@ static int tas_client_op_run(struct aurix_ocds *ocds) {
       memcpy(&rsp_wr, pl0_buffer + pl0_offset, sizeof(tas_pl0rsp_wr_st));
       pl0_offset++;
       if (rsp_wr.cmd != req->cmd || rsp_wr.err != TAS_PL0_ERR_NO_ERROR ||
-          rsp_wr.wlwr != (req->count + 3) / 4) {
+          rsp_wr.wlwr != (req->count + (req->cmd == TAS_PL0_CMD_WR64 ? 1 : 0))) {
         client_state.con_queues[ocds->con_id].reqs_count = 0;
         return ERROR_FAIL;
       }
