@@ -16,6 +16,30 @@ static LIST_HEAD(all_ocds);
 
 extern struct adapter_driver *adapter_driver;
 
+/**
+ * Synchronous read of a word from memory or a system register.
+ * As a side effect, this flushes any queued transactions.
+ *
+ * @param ap The MEM-AP to access.
+ * @param address Address of the 32-bit word to read; it must be
+ *	readable by the currently selected MEM-AP.
+ * @param value points to where the result will be stored.
+ *
+ * @return ERROR_OK for success; *value holds the result.
+ * Otherwise a fault code.
+ */
+int aurix_ocds_atomic_read_u32(struct aurix_ocds *ocds, target_addr_t address,
+		uint32_t *value)
+{
+	int retval;
+
+	retval = aurix_ocds_queue_soc_read_u32(ocds, address, value);
+	if (retval != ERROR_OK)
+		return retval;
+
+	return aurix_ocds_run(ocds);
+}
+
 
 struct aurix_ocds *aurix_ocds_by_jim_obj(Jim_Interp *interp, Jim_Obj *o) {
   struct aurix_ocds *ocds;

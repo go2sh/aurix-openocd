@@ -72,4 +72,7 @@ static inline int aurix_ocds_run(struct aurix_ocds *ocds) {
   return ocds->ops->run(ocds);
 }
 
+int aurix_ocds_atomic_read_u32(struct aurix_ocds *ocds, target_addr_t address,
+		uint32_t *value);
+
 #endif
