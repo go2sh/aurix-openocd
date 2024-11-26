@@ -1,6 +1,9 @@
+#include "helper/binarybuffer.h"
 #include "helper/command.h"
+#include "jtag/interface.h"
 #include "jtag/tas.h"
 #include "target/aurix/aurix_ocds.h"
+#include "target/register.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <time.h>
@@ -15,7 +18,88 @@
 
 #include "aurix.h"
 
-static int aurix_poll(struct target *target) { return ERROR_OK; }
+#define DBGSR_HALT (1 << 1)
+#define DBGSR_HALT_SET (3 << 1)
+#define DBGSR_HALT_RESET (2 << 1)
+
+static int aurix_read_dbgsr(struct target *target, uint32_t *debug_sr) {
+  struct aurix_private_config *aurix = target_to_aurix(target);
+
+  return aurix_ocds_atomic_read_u32(
+      aurix->ocds, 0xF8810000 + 0x20000 * target->coreid + 0xFD00, debug_sr);
+}
+
+static int aurix_read_syscon(struct target *target, uint32_t *syscon) {
+  struct aurix_private_config *aurix = target_to_aurix(target);
+
+  return aurix_ocds_atomic_read_u32(
+      aurix->ocds, 0xF8810000 + 0x20000 * target->coreid + 0xFE14, syscon);
+}
+
+static int tricore_breakpoints_clear(struct target *target) {
+  /* Clear out any existing breakpoints */
+  uint8_t trig[16 * 4];
+  memset(trig, 0, 16 * 4);
+  return target_write_memory(
+      target, 0xF8810000 + 0x20000 * target->coreid + 0xF000, 4, 16, trig);
+}
+
+static int aurix_poll(struct target *target) {
+  enum target_state prev_target_state;
+  int ret = ERROR_OK;
+  uint32_t dbgsr;
+  uint32_t syscon;
+
+  ret = aurix_read_dbgsr(target, &dbgsr);
+  if (ret != ERROR_OK)
+    return ret;
+
+  ret = aurix_read_syscon(target, &syscon);
+  if (ret != ERROR_OK)
+    return ret;
+
+  if (syscon & (1 << 24)) {
+    target->state = TARGET_HALTED;
+    return ERROR_OK;
+  }
+
+  if (dbgsr & DBGSR_HALT) {
+    prev_target_state = target->state;
+    if (prev_target_state != TARGET_HALTED) {
+      // senum target_debug_reason debug_reason = target->debug_reason;
+
+      /* We have a halting debug event */
+      target->state = TARGET_HALTED;
+      LOG_DEBUG("Target %s halted", target_name(target));
+
+#if 0
+      ret = tricore_debug_entry(target);
+      if (ret != ERROR_OK)
+        return ret;
+#endif
+
+      /* TODO: Multi-core */
+
+      switch (prev_target_state) {
+      case TARGET_RUNNING:
+      case TARGET_UNKNOWN:
+      case TARGET_RESET:
+        target_call_event_callbacks(target, TARGET_EVENT_HALTED);
+        break;
+      case TARGET_DEBUG_RUNNING:
+        target_call_event_callbacks(target, TARGET_EVENT_DEBUG_HALTED);
+        break;
+      default:
+        break;
+      }
+    }
+  } else {
+    target->state = TARGET_RUNNING;
+  }
+  /* TODO: Maybe reset */
+
+  return ret;
+}
 
 /* Invoked only from target_arch_state().
  * Issue USER() w/architecture specific status.  */
@@ -29,12 +113,67 @@ int aurix_target_request_data(struct target *target, uint32_t size,
 
 /* halt will log a warning, but return ERROR_OK if the target is already halted.
  */
-int aurix_halt(struct target *target) { return ERROR_FAIL; }
+int aurix_halt(struct target *target) {
+  int ret = 0;
+
+  if (target->state == TARGET_HALTED) {
+    LOG_TARGET_DEBUG(target, "target already halted");
+    return ERROR_OK;
+  }
+
+  ret = target_write_u32(target, 0xF8810000 + 0x20000 * target->coreid + 0xFD00,
+                         DBGSR_HALT_SET);
+  if (ret) {
+    LOG_TARGET_ERROR(target, "Failed to halt target");
+    return ret;
+  }
+
+  target->debug_reason = DBG_REASON_DBGRQ;
+
+  return ret;
+}
 /* See target.c target_resume() for documentation. */
 int aurix_resume(struct target *target, int current, target_addr_t address,
                  int handle_breakpoints, int debug_execution) {
-  return ERROR_FAIL;
+  int ret = 0;
+
+  if (target->state == TARGET_RUNNING) {
+    LOG_TARGET_DEBUG(target, "target already halted");
+    return ERROR_OK;
+  }
+
+  if (current) {
+    ret =
+        target_write_u32(target, 0xF8810000 + 0x20000 * target->coreid + 0xFD00,
+                         DBGSR_HALT_RESET);
+    if (ret) {
+      LOG_TARGET_ERROR(target, "Failed to continue target");
+      return ret;
+    }
+  }
+
+  /* registers are now invalid */
+  register_cache_invalidate(target->reg_cache);
+
+  if (!debug_execution) {
+    target->state = TARGET_RUNNING;
+    ret = target_call_event_callbacks(target, TARGET_EVENT_RESUMED);
+    if (ret) {
+      return ret;
+    }
+    // LOG_TARGET_DEBUG(target, "resumed at 0x%08" PRIx32, resume_pc);
+  } else {
+    target->state = TARGET_DEBUG_RUNNING;
+    ret = target_call_event_callbacks(target, TARGET_EVENT_DEBUG_RESUMED);
+    if (ret) {
+      return ret;
+    }
+    // LOG_DEBUG("target debug resumed at 0x%08" PRIx32, resume_pc);
+  }
+
+  return ERROR_OK;
 }
+
 int aurix_step(struct target *target, int current, target_addr_t address,
                int handle_breakpoints) {
   return ERROR_FAIL;
@@ -54,7 +193,52 @@ int aurix_step(struct target *target, int current, target_addr_t address,
  * the way reset's are configured.
  *
  */
-int aurix_assert_reset(struct target *target) { return ERROR_FAIL; }
+int aurix_assert_reset(struct target *target) {
+  enum reset_types reset_config = jtag_get_reset_config();
+
+  /* Issue some kind of warm reset. */
+  if (target_has_event_action(target, TARGET_EVENT_RESET_ASSERT))
+    target_handle_event(target, TARGET_EVENT_RESET_ASSERT);
+  else if (reset_config & RESET_HAS_SRST) {
+    bool srst_asserted = false;
+
+    if (target->reset_halt && !(reset_config & RESET_SRST_PULLS_TRST)) {
+      if (target_was_examined(target)) {
+
+        if (reset_config & RESET_SRST_NO_GATING) {
+          /*
+           * SRST needs to be asserted *before* Reset Catch
+           * debug event can be set up.
+           */
+          adapter_assert_reset();
+          srst_asserted = true;
+        }
+
+        /* Catch logic currently implemented in adapter */
+      } else {
+        LOG_WARNING(
+            "%s: Target not examined, will not halt immediately after reset!",
+            target_name(target));
+      }
+    }
+
+    /* REVISIT handle "pulls" cases, if there's
+     * hardware that needs them to work.
+     */
+    if (!srst_asserted)
+      adapter_assert_reset();
+  } else {
+    LOG_ERROR("%s: how to reset?", target_name(target));
+    return ERROR_FAIL;
+  }
+
+  /* registers are now invalid */
+  register_cache_invalidate(target->reg_cache);
+
+  target->state = TARGET_RESET;
+
+  return ERROR_OK;
+}
 /**
  * The implementation is responsible for polling the
  * target such that target->state reflects the
@@ -66,7 +250,37 @@ int aurix_assert_reset(struct target *target) { return ERROR_FAIL; }
  *
  * reset run; halt
  */
-int aurix_deassert_reset(struct target *target) { return ERROR_FAIL; }
+int aurix_deassert_reset(struct target *target) {
+  int ret;
+
+  /* be certain SRST is off */
+  adapter_deassert_reset();
+
+  if (!target_was_examined(target))
+    return ERROR_OK;
+
+  ret = aurix_poll(target);
+  if (ret != ERROR_OK)
+    return ret;
+
+  if (target->reset_halt) {
+    /* Breakpoints clear */
+    tricore_breakpoints_clear(target);
+
+    if (target->state != TARGET_HALTED) {
+      LOG_TARGET_WARNING(target, "ran after reset and before halt ...");
+      if (target_was_examined(target)) {
+        ret = aurix_halt(target);
+        if (ret != ERROR_OK)
+          return ret;
+      } else {
+        target->state = TARGET_UNKNOWN;
+      }
+    }
+  }
+
+  return ERROR_OK;
+}
 int aurix_soft_reset_halt(struct target *target) { return ERROR_FAIL; }
 
 /**
@@ -94,7 +308,23 @@ const char *aurix_get_gdb_arch(const struct target *target) {
 int aurix_get_gdb_reg_list(struct target *target, struct reg **reg_list[],
                            int *reg_list_size,
                            enum target_register_class reg_class) {
-  return ERROR_FAIL;
+
+  switch (reg_class) {
+  case REG_CLASS_ALL:
+  case REG_CLASS_GENERAL:
+    *reg_list_size = 35;
+    *reg_list = malloc(sizeof(struct reg *) * (*reg_list_size));
+
+    int i;
+    for (i = 0; i < *reg_list_size; i++) {
+      (*reg_list)[i] = &target->reg_cache->reg_list[i];
+    }
+    return ERROR_OK;
+    break;
+  default:
+    LOG_ERROR("not a valid register class type in query.");
+    return ERROR_FAIL;
+  }
 }
 
 /**
@@ -370,10 +600,138 @@ int aurix_target_jim_commands(struct target *target,
 int aurix_examine(struct target *target) {
 
   if (!target_was_examined(target)) {
-
     target_set_examined(target);
   }
+
+  tricore_breakpoints_clear(target);
+
   return ERROR_OK;
+}
+
+static const struct {
+  const char *const name;
+  uint16_t reg_offset;
+  bool caller_saved;
+} tricore_core_regs[] = {
+    {.name = "d0", .reg_offset = 0xFF00, .caller_saved = true},
+    {.name = "d1", .reg_offset = 0xFF04, .caller_saved = true},
+    {.name = "d2", .reg_offset = 0xFF08, .caller_saved = true},
+    {.name = "d3", .reg_offset = 0xFF0C, .caller_saved = true},
+    {.name = "d4", .reg_offset = 0xFF10, .caller_saved = true},
+    {.name = "d5", .reg_offset = 0xFF14, .caller_saved = true},
+    {.name = "d6", .reg_offset = 0xFF18, .caller_saved = true},
+    {.name = "d7", .reg_offset = 0xFF1C, .caller_saved = true},
+    {.name = "d8", .reg_offset = 0xFF20},
+    {.name = "d9", .reg_offset = 0xFF24},
+    {.name = "d10", .reg_offset = 0xFF28},
+    {.name = "d11", .reg_offset = 0xFF2C},
+    {.name = "d12", .reg_offset = 0xFF30},
+    {.name = "d13", .reg_offset = 0xFF34},
+    {.name = "d14", .reg_offset = 0xFF38},
+    {.name = "d15", .reg_offset = 0xFF3C},
+    {.name = "a0", .reg_offset = 0xFF80, .caller_saved = true},
+    {.name = "a1", .reg_offset = 0xFF84, .caller_saved = true},
+    {.name = "a2", .reg_offset = 0xFF88, .caller_saved = true},
+    {.name = "a3", .reg_offset = 0xFF8C, .caller_saved = true},
+    {.name = "a4", .reg_offset = 0xFF90, .caller_saved = true},
+    {.name = "a5", .reg_offset = 0xFF94, .caller_saved = true},
+    {.name = "a6", .reg_offset = 0xFF98, .caller_saved = true},
+    {.name = "a7", .reg_offset = 0xFF9C, .caller_saved = true},
+    {.name = "a8", .reg_offset = 0xFFA0, .caller_saved = true},
+    {.name = "a9", .reg_offset = 0xFFA4, .caller_saved = true},
+    {.name = "a10", .reg_offset = 0xFFA8},
+    {.name = "a11", .reg_offset = 0xFFAC},
+    {.name = "a12", .reg_offset = 0xFFB0},
+    {.name = "a13", .reg_offset = 0xFFB4},
+    {.name = "a14", .reg_offset = 0xFFB8},
+    {.name = "a15", .reg_offset = 0xFFBC},
+    {.name = "PCX", .reg_offset = 0xFE00},
+    {.name = "PSW", .reg_offset = 0xFE04},
+    {.name = "PC", .reg_offset = 0xFE08},
+};
+
+int aurix_reg_get(struct reg *reg) {
+  struct tricore_reg *arch_reg = (struct tricore_reg *)reg->arch_info;
+  struct target *target = arch_reg->target;
+
+  int ret = target_read_buffer(
+      target, 0xF8810000 + 0x20000 * target->coreid + arch_reg->offset, 4,
+      arch_reg->value);
+
+  if (ret == 0) {
+    reg->valid = true;
+    reg->dirty = false;
+  }
+
+  return ret;
+}
+int aurix_reg_set(struct reg *reg, uint8_t *buf) {
+  struct tricore_reg *arch_reg = (struct tricore_reg *)reg->arch_info;
+
+  memcpy(arch_reg->value, buf, 4);
+  reg->valid = 1;
+  reg->dirty = 1;
+
+  return 0;
+}
+static const struct reg_arch_type aurix_reg_type = {.get = aurix_reg_get,
+                                                    .set = aurix_reg_set};
+
+static void tricore_build_reg_cache(struct target *target) {
+  int num_regs = ARRAY_SIZE(tricore_core_regs);
+
+  struct reg_cache *cache = malloc(sizeof(struct reg_cache));
+  struct reg *reg_list = calloc(num_regs, sizeof(struct reg));
+  struct tricore_reg *reg_arch_info =
+      calloc(num_regs, sizeof(struct tricore_reg));
+  int i;
+
+  if (!cache || !reg_list || !reg_arch_info) {
+    free(cache);
+    free(reg_list);
+    free(reg_arch_info);
+    target->reg_cache = NULL;
+  }
+  target->reg_cache = cache;
+
+  cache->name = "TriCore registers";
+  cache->next = NULL;
+  cache->reg_list = reg_list;
+  cache->num_regs = 0;
+
+  for (i = 0; i < num_regs; i++) {
+    reg_arch_info[i].offset = tricore_core_regs[i].reg_offset;
+    reg_arch_info[i].target = target;
+
+    reg_list[i].name = tricore_core_regs[i].name;
+    reg_list[i].number = i;
+    reg_list[i].size = 32;
+    reg_list[i].value = reg_arch_info[i].value;
+    reg_list[i].type = &aurix_reg_type;
+    reg_list[i].arch_info = &reg_arch_info[i];
+    reg_list[i].exist = true;
+
+    /* This really depends on the calling convention in use */
+    reg_list[i].caller_save = tricore_core_regs[i].caller_saved;
+
+    /* Registers data type, as used by GDB target description */
+    reg_list[i].reg_data_type = malloc(sizeof(struct reg_data_type));
+    if (i < 16) {
+      reg_list[i].reg_data_type->type = REG_TYPE_INT32;
+    } else if (i < 32) {
+      reg_list[i].reg_data_type->type = REG_TYPE_DATA_PTR;
+    } else if (i == 32 || i == 33) {
+      reg_list[i].reg_data_type->type = REG_TYPE_UINT32;
+    } else if (i == 34) {
+      reg_list[i].reg_data_type->type = REG_TYPE_CODE_PTR;
+    }
+
+    reg_list[i].feature = malloc(sizeof(struct reg_feature));
+    reg_list[i].feature->name = "org.gnu.gdb.tricore.core";
+    reg_list[i].group = "general";
+
+    cache->num_regs++;
+  }
 }
 
 /* Set up structures for target.
@@ -382,6 +740,7 @@ int aurix_examine(struct target *target) {
  * before the JTAG chain has been examined/verified
  * */
 int aurix_init_target(struct command_context *cmd_ctx, struct target *target) {
+  tricore_build_reg_cache(target);
 
   return ERROR_OK;
 }
@@ -445,7 +804,7 @@ int aurix_mmu(struct target *target, int *enabled) { return ERROR_FAIL; }
  * arm7/9 targets, which they really should except in the most contrived
  * circumstances.
  */
-int aurix_check_reset(struct target *target) { return ERROR_FAIL; }
+int aurix_check_reset(struct target *target) { return ERROR_OK; }
 
 /* get GDB file-I/O parameters from target
  */

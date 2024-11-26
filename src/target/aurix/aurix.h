@@ -15,4 +15,9 @@ static inline struct aurix_private_config *target_to_aurix(struct target *target
   return (struct aurix_private_config*) target->private_config;
 }
 
+struct tricore_reg {
+  struct target *target;
+  uint16_t offset;
+  uint8_t value[4];
+};
 #endif
