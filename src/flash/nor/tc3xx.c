@@ -158,12 +158,14 @@ static int tc3xx_write(struct flash_bank *bank, const uint8_t *buffer,
     return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
   }
 
+  while (page_offset < count) {
+    /* Enter page mode*/
   err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF005554, 0x50);
   if (err) {
     goto err;
   }
 
-  while (page_offset < count) {
+    /* Check for burst sequence*/
     if (count - page_offset >= 256) {
       uint32_t i;
       for (i = 0; i < 256; i += 4) {
@@ -196,7 +198,7 @@ static int tc3xx_write(struct flash_bank *bank, const uint8_t *buffer,
       page_offset += 256;
     } else {
       uint32_t i;
-      for (i = 0; i < 32 && page_offset + i + 4 <= count; i += 4) {
+      for (i = 0; i < 32 && page_offset + i + 3 < count; i += 4) {
         uint32_t data;
         memcpy(&data, buffer + page_offset + i, 4);
         err = aurix_ocds_queue_soc_write_u32(
@@ -207,10 +209,11 @@ static int tc3xx_write(struct flash_bank *bank, const uint8_t *buffer,
       }
 
       /* Write unaligned data to page */
-      if (page_offset + i < count) {
-        uint32_t data = 0x0;
-        memcpy(&data, buffer + page_offset + i, count - page_offset - i);
-        err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF0055F0, data);
+      if ((count - i - page_offset) < 4) {
+        uint32_t data;
+        memcpy(&data, buffer + page_offset + i, count - i - page_offset);
+        err = aurix_ocds_queue_soc_write_u32(
+            ocds, 0xAF0055F0 + ((i % 8) == 0 ? 0 : 4), data);
         if (err) {
           goto err;
         }
@@ -218,7 +221,8 @@ static int tc3xx_write(struct flash_bank *bank, const uint8_t *buffer,
       }
       /* Fill up to page boundary */
       for (; i < 32; i += 4) {
-        err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF0055F0, 0xFFFFFFFF);
+        err = aurix_ocds_queue_soc_write_u32(
+            ocds, 0xAF0055F0 + ((i % 8) == 0 ? 0 : 4), 0xFFFFFFFF);
         if (err) {
           goto err;
         }
