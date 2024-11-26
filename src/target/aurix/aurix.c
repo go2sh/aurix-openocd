@@ -121,11 +121,6 @@ int aurix_read_memory(struct target *target, target_addr_t address,
   struct aurix_private_config *aurix_cfg = target->private_config;
   int ret;
 
-  if (aurix_ocds_get(aurix_cfg->ocds) < 0) {
-    LOG_ERROR("Failed to get access to OCDS");
-    return ERROR_FAIL;
-  }
-
   ret =
       aurix_ocds_queue_soc_read(aurix_cfg->ocds, address, size, count, buffer);
   if (ret) {
@@ -140,7 +135,6 @@ int aurix_read_memory(struct target *target, target_addr_t address,
   }
 
 exit:
-  aurix_ocds_put(aurix_cfg->ocds);
   return ret;
 }
 /**
@@ -151,11 +145,6 @@ int aurix_write_memory(struct target *target, target_addr_t address,
                        uint32_t size, uint32_t count, const uint8_t *buffer) {
   struct aurix_private_config *aurix_cfg = target->private_config;
   int ret;
-
-  if (aurix_ocds_get(aurix_cfg->ocds) < 0) {
-    LOG_ERROR("Failed to get access to OCDS %s", aurix_cfg->ocds->name);
-    return ERROR_FAIL;
-  }
 
   ret =
       aurix_ocds_queue_soc_write(aurix_cfg->ocds, address, size, count, buffer);
@@ -171,7 +160,6 @@ int aurix_write_memory(struct target *target, target_addr_t address,
   }
 
 exit:
-  aurix_ocds_put(aurix_cfg->ocds);
   return ret;
 }
 

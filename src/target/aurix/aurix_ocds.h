@@ -29,24 +29,10 @@ struct aurix_ocds_ops {
 struct aurix_ocds *aurix_ocds_by_jim_obj(Jim_Interp *interp, Jim_Obj *o);
 int ocds_register_commands(struct command_context *cmd_ctx);
 
-static inline int aurix_ocds_get(struct aurix_ocds *ocds) {
-  return atomic_exchange(&ocds->used, 1) ? ERROR_FAIL : ERROR_OK;
-}
-
-static inline void aurix_ocds_put(struct aurix_ocds *ocds) {
-  atomic_store(&ocds->used, 0);
-}
-
 static inline int aurix_ocds_queue_soc_read(struct aurix_ocds *ocds,
                                             uint32_t addr, uint32_t size,
                                             uint32_t count, void *data) {
   assert(ocds->ops);
-  if (!ocds->used) {
-    LOG_ERROR("BUG: refcount OCDS %s used without get", ocds->name);
-    if (atomic_exchange(&ocds->used, 1)) {
-      return ERROR_FAIL;
-    }
-  }
   return ocds->ops->queue_soc_read(ocds, addr, size, count, data);
 }
 
@@ -67,12 +53,6 @@ static inline int aurix_ocds_queue_soc_write(struct aurix_ocds *ocds,
                                              uint32_t addr, uint32_t size,
                                              uint32_t count, const void *data) {
   assert(ocds->ops);
-  if (!ocds->used) {
-    LOG_ERROR("BUG: refcount OCDS %s used without get", ocds->name);
-    if (atomic_exchange(&ocds->used, 1)) {
-      return ERROR_FAIL;
-    }
-  }
   return ocds->ops->queue_soc_write(ocds, addr, size, count, data);
 }
 static inline int aurix_ocds_queue_soc_write_u8(struct aurix_ocds *ocds,
@@ -89,13 +69,6 @@ static inline int aurix_ocds_queue_soc_write_u32(struct aurix_ocds *ocds,
 }
 
 static inline int aurix_ocds_run(struct aurix_ocds *ocds) {
-  assert(ocds->ops);
-  if (!ocds->used) {
-    LOG_ERROR("BUG: refcount OCDS %s used without get", ocds->name);
-    if (atomic_exchange(&ocds->used, 1)) {
-      return ERROR_FAIL;
-    }
-  }
   return ocds->ops->run(ocds);
 }
 

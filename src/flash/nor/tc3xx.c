@@ -79,10 +79,6 @@ int tc3xx_erase(struct flash_bank *bank, unsigned int first,
   struct aurix_ocds *ocds = target_to_aurix(bank->target)->ocds;
   int err;
 
-  if (aurix_ocds_get(ocds)) {
-    return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
-  }
-
   while (first <= last) {
     uint32_t addr = bank->base + bank->sectors[first].offset;
     /* Align sector count to physical sector boundary (64 sectors) */
@@ -130,17 +126,14 @@ int tc3xx_erase(struct flash_bank *bank, unsigned int first,
 
     if (flash_err) {
       LOG_ERROR("Flash operation failed: %x", flash_err);
-      aurix_ocds_put(ocds);
       return ERROR_FLASH_OPERATION_FAILED;
     }
   }
 
-  aurix_ocds_put(ocds);
   return ERROR_OK;
 
 err:
   LOG_ERROR("Failed to execute flash erase sequence");
-  aurix_ocds_put(ocds);
   return ERROR_FLASH_OPERATION_FAILED;
 }
 
@@ -154,17 +147,14 @@ static int tc3xx_write(struct flash_bank *bank, const uint8_t *buffer,
     return ERROR_FLASH_DST_BREAKS_ALIGNMENT;
   }
 
-  if (aurix_ocds_get(ocds)) {
-    return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
-  }
 
   while (page_offset < count) {
     /* Enter page mode*/
-  err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF005554, 0x50);
-  if (err) {
-    goto err;
-  }
-
+    err = aurix_ocds_queue_soc_write_u32(ocds, 0xAF005554, 0x50);
+    if (err) {
+      goto err;
+    }
+    
     /* Check for burst sequence*/
     if (count - page_offset >= 256) {
       uint32_t i;
@@ -273,17 +263,14 @@ static int tc3xx_write(struct flash_bank *bank, const uint8_t *buffer,
 
     if (flash_err) {
       LOG_ERROR("Flash operation failed: %x", flash_err);
-      aurix_ocds_put(ocds);
       return ERROR_FLASH_OPERATION_FAILED;
     }
   }
 
-  aurix_ocds_put(ocds);
   return ERROR_OK;
 
 err:
   LOG_ERROR("Failed to execute flash erase sequence");
-  aurix_ocds_put(ocds);
   return ERROR_FLASH_OPERATION_FAILED;
 }
 
